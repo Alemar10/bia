@@ -1,0 +1,75 @@
+name: Build and Deploy to Elastic Beanstalk
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: 801333664660.dkr.ecr.us-east-1.amazonaws.com/bia
+  EB_APP_NAME: bia
+  EB_ENV_NAME: bia-env
+  IMAGE_TAG: latest
+  ZIP_NAME: bia-deploy.zip
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t $ECR_REPO:$IMAGE_TAG .
+          docker push $ECR_REPO:$IMAGE_TAG
+
+      - name: Generate Dockerrun.aws.json
+        run: |
+          echo '{
+            "AWSEBDockerrunVersion": "1",
+            "Image": {
+              "Name": "'$ECR_REPO':'$IMAGE_TAG'",
+              "Update": "true"
+            },
+            "Ports": [
+              {
+                "ContainerPort": "80"
+              }
+            ]
+          }' > Dockerrun.aws.json
+
+      - name: Package Dockerrun.aws.json
+        run: zip -r $ZIP_NAME Dockerrun.aws.json
+
+      - name: Upload bundle to S3
+        run: |
+          BUCKET_NAME=$(aws elasticbeanstalk describe-environment-resources --environment-name $EB_ENV_NAME --query 'EnvironmentResources.Instances[0].Id' --output text | cut -d'-' -f1)-elasticbeanstalk-bucket
+          aws s3 mb s3://$BUCKET_NAME || true
+          aws s3 cp $ZIP_NAME s3://$BUCKET_NAME/$ZIP_NAME
+
+      - name: Create new Elastic Beanstalk application version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name $EB_APP_NAME \
+            --version-label v-${{ github.run_number }} \
+            --source-bundle S3Bucket=$BUCKET_NAME,S3Key=$ZIP_NAME
+
+      - name: Deploy new version to Elastic Beanstalk
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name $EB_ENV_NAME \
+            --version-label v-${{ github.run_number }}
