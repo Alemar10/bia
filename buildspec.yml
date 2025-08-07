@@ -1,56 +1,26 @@
 version: 0.2
 
-env:
-  variables:
-    AWS_REGION: us-east-1
-    ECR_REPO: 801333664660.dkr.ecr.us-east-1.amazonaws.com/bia
-    IMAGE_TAG: latest
-    ZIP_NAME: bia-deploy.zip
-    EB_APP_NAME: bia
-    EB_ENV_NAME: bia-env
-
 phases:
   pre_build:
     commands:
-      - echo Fazendo login no ECR...
-      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
-
+      - echo Fazendo login no ECR...      
+      - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 801333664660.dkr.ecr.us-east-1.amazonaws.com
+      - REPOSITORY_URI=801333664660.dkr.ecr.us-east-1.amazonaws.com/bia
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
   build:
     commands:
-      - echo Buildando imagem...
-      - docker build -t $ECR_REPO:$IMAGE_TAG .
-      - docker push $ECR_REPO:$IMAGE_TAG
-
+      - echo Build iniciado em `date`
+      - echo Gerando imagem da BIA...
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
   post_build:
     commands:
-      - echo Criando Dockerrun.aws.json...
-      - |
-        echo "{
-          \"AWSEBDockerrunVersion\": \"1\",
-          \"Image\": {
-            \"Name\": \"$ECR_REPO:$IMAGE_TAG\",
-            \"Update\": \"true\"
-          },
-          \"Ports\": [
-            {
-              \"ContainerPort\": \"80\"
-            }
-          ]
-        }" > Dockerrun.aws.json
-      - echo Empacotando para deploy...
-      - zip $ZIP_NAME Dockerrun.aws.json
-      - echo Subindo para S3...
-      - aws s3 cp $ZIP_NAME s3://bia-bucket/$ZIP_NAME
-      - echo Criando nova versão da aplicação...
-      - aws elasticbeanstalk create-application-version \
-          --application-name $EB_APP_NAME \
-          --version-label "v-$(date +%Y%m%d%H%M%S)" \
-          --source-bundle S3Bucket=bia-bucket,S3Key=$ZIP_NAME
-      - echo Atualizando ambiente...
-      - aws elasticbeanstalk update-environment \
-          --environment-name $EB_ENV_NAME \
-          --version-label "v-$(date +%Y%m%d%H%M%S)"
-
+      - echo Build finalizado com sucesso em `date`
+      - echo Fazendo push da imagem para o ECR...
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo Gerando artefato da imagem para o ECS
+      - printf '[{"name":"bia","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
 artifacts:
-  files:
-    - Dockerrun.aws.json
+  files: imagedefinitions.json
